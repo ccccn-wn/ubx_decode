@@ -46,8 +46,25 @@ from pyubx2 import (
     UBXParseError,
     UBXReader,
 )
-
+import pandas as pd
+import numpy as np
+import time
+import struct
 CONNECTED = 1
+
+def bytes_to_Doublefloat(bytes):
+    return struct.unpack(f'<d', bytes)[0]
+def bytes_to_float(bytes):
+    return struct.unpack(f'<f', bytes)[0]
+
+def bytes_to_U32(bytes):
+    return struct.unpack(f'<I', bytes)[0]
+
+def bytes_to_U16(bytes):
+    return struct.unpack(f'<H', bytes)[0]
+
+def bytes_to_U8(bytes):
+    return struct.unpack(f'B', bytes)[0]
 
 
 class GNSSSkeletonApp:
@@ -141,30 +158,50 @@ class GNSSSkeletonApp:
         ubr = UBXReader(
             stream, protfilter=(NMEA_PROTOCOL | UBX_PROTOCOL | RTCM3_PROTOCOL)
         )
-        while not stopevent.is_set():
+        svID = []
+        cpMes = []
+        CN0 = []
+        prMes = []
+        rcvTow = []
+        rcvWeek = []
+        BeiJingTime = []
+        DoppleMes = []
+        RunCnt = 0
+        # while not stopevent.is_set():
+        while RunCnt < 10:
             try:
-                if stream.in_waiting:
-                    _, parsed_data = ubr.read()
-                    if parsed_data:
-                        # extract current navigation solution
-                        self._extract_coordinates(parsed_data)
+                raw_data = ubr.read()
+                if raw_data != None:
+                    RunCnt += 1
+                    lenm = len(raw_data)
+                    hdr = raw_data[0:2]
+                    clsid = raw_data[2:3]
+                    msgid = raw_data[3:4]
+                    lenb = raw_data[4:6]
+                    if lenb == b"\x00\x00":
+                        payload = None
+                        leni = 0
+                    else:
+                        payload = raw_data[6 : lenm - 2]
+                    leni = len(payload)
+                    numMeasCal = (leni - 16)/32
+                    tow = bytes_to_Doublefloat(payload[0:8])
+                    week = bytes_to_U16(payload[8:10])
+                    numMeasRcv = bytes_to_U8(payload[11:12])
+                    if numMeasCal == numMeasRcv: #整数
+                        for i in range(numMeasRcv):
+                            BeiJingTime.append(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
+                            rcvTow.append(tow)
+                            prm = bytes_to_Doublefloat(payload[16+32*i:24+32*i])
+                            prMes.append(prm)
+                            cpm = bytes_to_Doublefloat(payload[24+32*i : 32+32*i])
+                            cpMes.append(cpm)            
+                            svid = bytes_to_U8(payload[37+32*i :38+32*i])
+                            svID.append(svid)
+                            cn0 = bytes_to_U8(payload[42+32*i:43+32*i])
+                            CN0.append(cn0)
+                            # dpMes = bytes_to_float(payload[42+32*i:43+32*i])
 
-                        # if it's an RXM-RTCM message, show which RTCM3 message
-                        # it's acknowledging and whether it's been used or not.""
-                        if parsed_data.identity == "RXM-RTCM":
-                            nty = (
-                                f" - {parsed_data.msgType} "
-                                f"{'Used' if parsed_data.msgUsed > 0 else 'Not used'}"
-                            )
-                        else:
-                            nty = ""
-
-                        if self.idonly:
-                            print(f"GNSS>> {parsed_data.identity}{nty}")
-                        else:
-                            print(parsed_data)
-
-                # send any queued output data to receiver
                 self._send_data(ubr.datastream, sendqueue)
 
             except (
@@ -177,7 +214,20 @@ class GNSSSkeletonApp:
             ) as err:
                 print(f"Error parsing data stream {err}")
                 continue
+        # writer = pd.ExcelWriter('output.xlsx')
+        # df1 = pd.DataFrame({'TOW': rcvTow})
+        # df2 = pd.DataFrame({'svid': svID})
+        # df3 = pd.DataFrame({'cpMes': cpMes})
 
+        # df1.to_excel(writer,'Sheet1')
+        # df2.to_excel(writer,'Sheet2')
+        # df3.to_excel(writer,'Sheet3')
+
+        # writer.close()
+
+        df = pd.DataFrame({'BeiJingTime': BeiJingTime,'rcvTow':rcvTow ,'AdrM':cpMes ,'PrM':prMes ,'CN0':CN0 ,'svid': svID})
+        df.to_excel('test1.xlsx', sheet_name='sheet1', index=False)
+        print("\n save successfully \n")
     def _extract_coordinates(self, parsed_data: object):
         """
         Extract current navigation solution from NMEA or UBX message.
@@ -267,16 +317,19 @@ class GNSSSkeletonApp:
 
         # create event of specified eventtype
 
+def GnssRawData_Decode(parse):
+    parse
+    
 
 if __name__ == "__main__":
     arp = ArgumentParser(
         formatter_class=ArgumentDefaultsHelpFormatter,
     )
     arp.add_argument(
-        "-P", "--port", required=False, help="Serial port", default="/dev/ttyACM1"
+        "-P", "--port", required=False, help="Serial port", default="COM13"
     )
     arp.add_argument(
-        "-B", "--baudrate", required=False, help="Baud rate", default=38400, type=int
+        "-B", "--baudrate", required=False, help="Baud rate", default=921600, type=int
     )
     arp.add_argument(
         "-T", "--timeout", required=False, help="Timeout in secs", default=3, type=float
