@@ -49,22 +49,11 @@ from pyubx2 import (
 import pandas as pd
 import numpy as np
 import time
-import struct
+from byteconvert import *
+from UtcTime import get_utcTime
+
+MAXRUNCNT = 1000
 CONNECTED = 1
-
-def bytes_to_Doublefloat(bytes):
-    return struct.unpack(f'<d', bytes)[0]
-def bytes_to_float(bytes):
-    return struct.unpack(f'<f', bytes)[0]
-
-def bytes_to_U32(bytes):
-    return struct.unpack(f'<I', bytes)[0]
-
-def bytes_to_U16(bytes):
-    return struct.unpack(f'<H', bytes)[0]
-
-def bytes_to_U8(bytes):
-    return struct.unpack(f'B', bytes)[0]
 
 
 class GNSSSkeletonApp:
@@ -163,16 +152,20 @@ class GNSSSkeletonApp:
         CN0 = []
         prMes = []
         rcvTow = []
+        iTow = []
         rcvWeek = []
         BeiJingTime = []
+        UtcTimeList = []
+        GPSWeekList = []
         DoppleMes = []
         RunCnt = 0
+        itowflag = rcvtowflag = 0
+        LogTime = str(get_utcTime())
         # while not stopevent.is_set():
-        while RunCnt < 10:
+        while RunCnt < MAXRUNCNT:
             try:
                 raw_data = ubr.read()
                 if raw_data != None:
-                    RunCnt += 1
                     lenm = len(raw_data)
                     hdr = raw_data[0:2]
                     clsid = raw_data[2:3]
@@ -180,16 +173,19 @@ class GNSSSkeletonApp:
                     lenb = raw_data[4:6]
                     if lenb == b"\x00\x00":
                         payload = None
-                        leni = 0
                     else:
                         payload = raw_data[6 : lenm - 2]
-                    leni = len(payload)
-                    numMeasCal = (leni - 16)/32
-                    tow = bytes_to_Doublefloat(payload[0:8])
-                    week = bytes_to_U16(payload[8:10])
-                    numMeasRcv = bytes_to_U8(payload[11:12])
-                    if numMeasCal == numMeasRcv: #整数
+
+                    if clsid == b'\x02' and msgid == b'\x15' and rcvtowflag == 0:
+                        rcvtowflag = 1
+                        tow = bytes_to_Doublefloat(payload[0:8])
+                        tow = bytes_to_Doublefloat(payload[0:8])
+                        GPSWeek = bytes_to_U16(payload[8:10])
+                        numMeasRcv = bytes_to_U8(payload[11:12])
                         for i in range(numMeasRcv):
+                            freID = bytes_to_U8(payload[38+32*i:39+32*i])
+                            if freID != 0:
+                                continue
                             BeiJingTime.append(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
                             rcvTow.append(tow)
                             prm = bytes_to_Doublefloat(payload[16+32*i:24+32*i])
@@ -200,7 +196,22 @@ class GNSSSkeletonApp:
                             svID.append(svid)
                             cn0 = bytes_to_U8(payload[42+32*i:43+32*i])
                             CN0.append(cn0)
-                            # dpMes = bytes_to_float(payload[42+32*i:43+32*i])
+                            dpMes = bytes_to_float(payload[32+32*i:36+32*i])
+                            DoppleMes.append(dpMes)
+                            utctime = get_utcTime()
+                            UtcTimeList.append(utctime)
+                            GPSWeekList.append(GPSWeek)                    
+                    elif clsid == b'\x01' and msgid == b'\x22' and itowflag == 0:
+                        itowflag = 1
+                        tow = bytes_to_U32(payload[0:4])
+                        iTow.append(tow)
+
+
+                    if itowflag == 1 and rcvtowflag == 1:
+                        RunCnt += 1
+                        itowflag = 0
+                        rcvtowflag = 0
+
 
                 self._send_data(ubr.datastream, sendqueue)
 
@@ -225,8 +236,13 @@ class GNSSSkeletonApp:
 
         # writer.close()
 
-        df = pd.DataFrame({'BeiJingTime': BeiJingTime,'rcvTow':rcvTow ,'AdrM':cpMes ,'PrM':prMes ,'CN0':CN0 ,'svid': svID})
-        df.to_excel('test1.xlsx', sheet_name='sheet1', index=False)
+        df1 = pd.DataFrame({'GPSWeek': GPSWeekList,'rcvTow':rcvTow ,'AdrM':cpMes ,'PrM':prMes ,'CN0':CN0 ,'DoppleMes':DoppleMes,'svid': svID})
+        df2 = pd.DataFrame({'iTow':iTow})
+
+        writer = pd.ExcelWriter(LogTime + '.xlsx')
+        df1.to_excel(writer, sheet_name="sheet1")
+        df2.to_excel(writer, sheet_name="sheet2")
+        writer.close()
         print("\n save successfully \n")
     def _extract_coordinates(self, parsed_data: object):
         """
